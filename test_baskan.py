@@ -226,3 +226,6 @@ sina_stok_veya_oran()
 
 import firmalar
 firmalar.sina()
+
+import faturalar
+faturalar.sina()

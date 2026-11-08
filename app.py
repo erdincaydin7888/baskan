@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                                QFormLayout, QDialogButtonBox, QHeaderView, QTextEdit)
 
 import cikti
+import faturalar
 import firmalar
 import kayit
 import mizan
@@ -636,8 +637,9 @@ class MaliTablolar(QWidget):
 
 class AnaPencere(QMainWindow):
     MODULLER = [("Mali Tablolar", "Mizan → Envanter/SMM, Gelir Tablosu,\nBilanço, FGK, Vergi", True),
-                ("Firmalar", "Firma kartları, entegratör / SGK /\nDijital Vergi Dairesi erişim bilgileri", True)] + \
-               [(f"Modül {i}", "Yakında", False) for i in range(3, 7)]
+                ("Firmalar", "Firma kartları, entegratör / SGK /\nDijital Vergi Dairesi erişim bilgileri", True),
+                ("E-Fatura → Fiş", "e-Fatura / e-Arşiv XML → alış-satış,\nKDV, tevkifat → muhasebe fişi (Excel)", True)] + \
+               [(f"Modül {i}", "Yakında", False) for i in range(4, 7)]
 
     def __init__(self):
         super().__init__()
@@ -666,10 +668,11 @@ class AnaPencere(QMainWindow):
         self.yigin.addWidget(ana)
         self.yigin.addWidget(MaliTablolar(lambda: self.yigin.setCurrentIndex(0)))
         self.yigin.addWidget(firmalar.FirmaModulu(lambda: self.yigin.setCurrentIndex(0)))
+        self.yigin.addWidget(faturalar.FaturaModulu(lambda: self.yigin.setCurrentIndex(0)))
 
     def ac(self, i):
-        if i == 1:   # Mali Tablolar'ın firma listesi Firmalar modülündeki unvanları da içersin
-            self.yigin.widget(1).firmalari_yenile()
+        if i in (1, 3):   # firma listeleri Firmalar modülündeki son tanımları görsün
+            self.yigin.widget(i).firmalari_yenile()
         self.yigin.setCurrentIndex(i)
 
 

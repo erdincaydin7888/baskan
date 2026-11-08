@@ -23,13 +23,21 @@ BOLUMLER = [
     ("Genel", [("unvan", "Unvan *", False), ("vkn", "VKN / TCKN", False), ("vergi_dairesi", "Vergi dairesi", False),
                ("adres", "Adres", False), ("telefon", "Telefon", False), ("eposta", "E-posta", False),
                ("yetkili", "Yetkili kişi", False)]),
-    ("E-Fatura Entegratörü", [("entegrator", "Entegratör firma", False), ("entegrator_kullanici", "Kullanıcı adı", False),
+    ("E-Fatura Entegratörü", [("entegrator", "Entegratör firma", False), ("entegrator_portal", "Portal adresi (https://…)", False),
+                              ("entegrator_kullanici", "Kullanıcı adı", False),
                               ("entegrator_sifre", "Şifre", True)]),
     ("SGK", [("sgk_kullanici", "Kullanıcı adı", False), ("sgk_isyeri_kodu", "İşyeri kodu", False),
              ("sgk_sistem_sifre", "Sistem şifresi", True), ("sgk_isyeri_sifre", "İşyeri şifresi", True)]),
     ("Dijital Vergi Dairesi (GİB)", [("gib_kullanici", "Kullanıcı kodu / TCKN", False), ("gib_sifre", "Şifre", True)]),
 ]
 GIZLI = [a for _, alanlar in BOLUMLER for a, _, g in alanlar if g]
+# Portal kısayolları: tıklanınca portal açılır, kullanıcı adı panoya kopyalanır (otomatik giriş YOK — portallar
+# güvenlik kodu ister; şifre "Kopyala" ile ayrıca alınır).
+PORTALLAR = {"E-Fatura Entegratörü": [("Entegratör portalını aç", None, "entegrator_kullanici")],
+             "SGK": [("e-Bildirge", "https://ebildirge.sgk.gov.tr/EBildirgeV2", "sgk_kullanici"),
+                     ("İşveren Sistemi (borç)", "https://uyg.sgk.gov.tr/IsverenSistemi", "sgk_kullanici")],
+             "Dijital Vergi Dairesi (GİB)": [("Dijital Vergi Dairesi", "https://dijital.gib.gov.tr/", "gib_kullanici"),
+                                             ("e-Arşiv Portalı", "https://earsivportal.efatura.gov.tr/intragiris.html", "gib_kullanici")]}
 
 
 def _dosya(kok=None):
@@ -140,6 +148,14 @@ class FirmaModulu(QWidget):
                 else:
                     f.addRow(etiket + ":", w)
                 self.alanlar[a] = w
+            if bolum in PORTALLAR:
+                ps = QHBoxLayout()
+                for etiket, url, kul in PORTALLAR[bolum]:
+                    b = QPushButton("↗ " + etiket)
+                    b.clicked.connect(lambda _, url=url, kul=kul: self.portal(url, kul))
+                    ps.addWidget(b)
+                ps.addStretch()
+                f.addRow("", ps)
             ic.addWidget(g)
         self.notlar = QPlainTextEdit()
         self.notlar.setPlaceholderText("Notlar")
@@ -217,6 +233,18 @@ class FirmaModulu(QWidget):
         self.secili = None
         self.listele()
         self.ac(None)
+
+    def portal(self, url, kullanici_alani):
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        url = url or self.alanlar["entegrator_portal"].text().strip()
+        if not url:
+            QMessageBox.information(self, "Başkan", "Entegratörün portal adresini 'Portal adresi' alanına yazın.")
+            return
+        QDesktopServices.openUrl(QUrl(url if "://" in url else "https://" + url))
+        if self.alanlar[kullanici_alani].text():
+            self.kopyala(self.alanlar[kullanici_alani].text())
+            self.durum.setText("Portal açıldı, kullanıcı adı panoda (şifre için Kopyala)")
 
     def kopyala(self, metin):
         """Panoya kopyalar, 30 sn sonra (pano hâlâ aynıysa) temizler."""
