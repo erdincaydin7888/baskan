@@ -10,7 +10,7 @@ jobs:
       - uses: actions/setup-python@v5
         with: {python-version: "3.12"}
       - run: pip install -r requirements.txt pyinstaller
-      - run: pyinstaller --onefile --windowed --name Baskan app.py
+      - run: pyinstaller --onefile --windowed --name Baskan --collect-submodules keyring --copy-metadata keyring app.py
       - run: Rename-Item dist\Baskan.exe "Başkan.exe"
       - uses: actions/upload-artifact@v4
         with: {name: Baskan-exe, path: dist/*.exe}

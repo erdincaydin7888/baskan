@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                                QFormLayout, QDialogButtonBox, QHeaderView, QTextEdit)
 
 import cikti
+import firmalar
 import kayit
 import mizan
 import motor
@@ -462,7 +463,7 @@ class MaliTablolar(QWidget):
         secili = self.firma.currentText()
         self.firma.blockSignals(True)
         self.firma.clear()
-        self.firma.addItems(sorted({f for f, *_ in kayit.liste()}, key=str.lower))
+        self.firma.addItems(sorted({f for f, *_ in kayit.liste()} | set(firmalar.unvanlar()), key=str.lower))
         self.firma.setEditText(secili)
         self.firma.blockSignals(False)
 
@@ -634,8 +635,9 @@ class MaliTablolar(QWidget):
 
 
 class AnaPencere(QMainWindow):
-    MODULLER = [("Mali Tablolar", "Mizan → Envanter/SMM, Gelir Tablosu,\nBilanço, FGK, Vergi", True)] + \
-               [(f"Modül {i}", "Yakında", False) for i in range(2, 7)]
+    MODULLER = [("Mali Tablolar", "Mizan → Envanter/SMM, Gelir Tablosu,\nBilanço, FGK, Vergi", True),
+                ("Firmalar", "Firma kartları, entegratör / SGK /\nDijital Vergi Dairesi erişim bilgileri", True)] + \
+               [(f"Modül {i}", "Yakında", False) for i in range(3, 7)]
 
     def __init__(self):
         super().__init__()
@@ -657,12 +659,18 @@ class AnaPencere(QMainWindow):
             b.setEnabled(aktif)
             b.setStyleSheet("font-size:16px")
             if aktif:
-                b.clicked.connect(lambda: self.yigin.setCurrentIndex(1))
+                b.clicked.connect(lambda _=False, i=i: self.ac(i + 1))
             grid.addWidget(b, i // 3, i % 3)
         lay.addLayout(grid)
         lay.addStretch()
         self.yigin.addWidget(ana)
         self.yigin.addWidget(MaliTablolar(lambda: self.yigin.setCurrentIndex(0)))
+        self.yigin.addWidget(firmalar.FirmaModulu(lambda: self.yigin.setCurrentIndex(0)))
+
+    def ac(self, i):
+        if i == 1:   # Mali Tablolar'ın firma listesi Firmalar modülündeki unvanları da içersin
+            self.yigin.widget(1).firmalari_yenile()
+        self.yigin.setCurrentIndex(i)
 
 
 if __name__ == "__main__":

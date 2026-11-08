@@ -222,3 +222,7 @@ def sina_stok_veya_oran():
 
 
 sina_stok_veya_oran()
+
+
+import firmalar
+firmalar.sina()
