@@ -65,13 +65,15 @@ def _yaz(h, kod, tutar, ad):
     h.setdefault(kod, {"ad": ad, "bakiye": 0.0})["bakiye"] = tutar
 
 
-def envanter_smm(h, yontem="envanter", ds_stok=None, kar_marji=None, elle_miktar=None, elle_tutar=None):
+def envanter_smm(h, yontem="envanter", ds_stok=None, kar_marji=None, elle_miktar=None, elle_tutar=None,
+                 ticari_satis=None):
     """150-153 stokları + 71x-74x üretim maliyetlerinden SMM (620/621/622/623) ve dönem sonu stokları.
     h yerinde değişir: stoklar dönem sonu değerine, 71x-74x sıfırlanıp 62x'e aktarılır.
     yontem: 'envanter' = dönem sonu fiili stoklar elle (girilmeyen stok mizan bakiyesinde kalır),
             'marj'     = SMM = net satış × (1 − brüt kâr oranı), satılabilir maliyet mizandan,
             'elle'     = satışa hazır stok miktar + tutarı elle, SMM brüt kâr oranından.
-    kar_marji: brüt kâr / net satış (0,25 = %25). Dönüş: (tablo satırları, özet sözlüğü, uyarılar)."""
+    kar_marji: brüt kâr / net satış (0,25 = %25) ya da {'150': oran, '153': oran} (gruba göre ayrı; ticari_satis
+               = 153'ten yapılan net satış, verilmezse satılabilir maliyet payıyla bölünür). Dönüş: (tablo satırları, özet sözlüğü, uyarılar)."""
     uy, satir = [], []  # satır: (tür, kod, açıklama, tutar)
     ds_stok = {k: v for k, v in (ds_stok or {}).items() if v is not None}
     b = {s: h.get(s, {}).get("bakiye", 0.0) for s in STOK}
@@ -130,6 +132,66 @@ def envanter_smm(h, yontem="envanter", ds_stok=None, kar_marji=None, elle_miktar
             satir.append(("ara", "623", "DİĞER SATIŞLARIN MALİYETİ", s623))
         smm = {"620": s620, "621": s621, "622": s622, "623": s623}
         ozet_ek = {}
+    elif yontem == "marj" and isinstance(kar_marji, dict):
+        # 08.11: 150 grubu (150-152 + üretim/hizmet maliyeti → 620/622) ve 153 (ticari mal → 621) için AYRI
+        # brüt kâr oranı. Satışın gruplara bölünüşü: ticari_satis girildiyse o, yoksa satılabilir maliyet oranı.
+        maliyet = {"uretim": b["150"] + b["151"] + b["152"] + t71 + t72 + t73 + t74 + m62["620"] + m62["622"] + m62["623"],
+                   "ticari": b["153"] + m62["621"]}
+        oran = {"uretim": kar_marji.get("150"), "ticari": kar_marji.get("153")}
+        aktif = [g for g in maliyet if maliyet[g] > 0.005]
+        for g in aktif:
+            if oran[g] is None:
+                raise ValueError(("150 grubu" if g == "uretim" else "153 ticari mal") + " brüt kâr oranı girilmedi.")
+        if ticari_satis is not None:
+            satis = {"ticari": ticari_satis, "uretim": net_satis - ticari_satis}
+        elif len(aktif) == 1:
+            satis = {g: (net_satis if g == aktif[0] else 0.0) for g in maliyet}
+        else:
+            pay = maliyet["ticari"] / (maliyet["ticari"] + maliyet["uretim"]) if aktif else 0.0
+            satis = {"ticari": net_satis * pay, "uretim": net_satis * (1 - pay)}
+            if aktif:
+                uy.append(f"Ticari mal satış tutarı girilmedi: net satışın %{pay * 100:.1f}'i (satılabilir maliyet "
+                          "payı) 153'e, kalanı 150 grubuna sayıldı. Gerçek ticari mal satışını alana yazın.")
+        g_smm = {g: satis[g] * (1 - (oran[g] or 0.0)) for g in maliyet}
+        g_ds = {g: maliyet[g] - g_smm[g] for g in maliyet}
+        for g in maliyet:
+            if g_ds[g] < -0.005:
+                uy.append(("150 grubu" if g == "uretim" else "153 ticari mal") + f": SMM ({g_smm[g]:,.2f}) satılabilir "
+                          f"maliyeti ({maliyet[g]:,.2f}) aşıyor, dönem sonu stok negatif; oranı kontrol edin.")
+        agirlik = {s: max(0.0, b[s]) for s in ("150", "151", "152")}
+        if not sum(agirlik.values()):
+            agirlik["152"] = 1.0
+        ds = {s: g_ds["uretim"] * agirlik[s] / sum(agirlik.values()) for s in agirlik}
+        ds["153"] = g_ds["ticari"]
+        hizmet_pay = (t74 + m62["622"]) / maliyet["uretim"] if maliyet["uretim"] else 0.0
+        smm = {"620": g_smm["uretim"] * (1 - hizmet_pay), "621": g_smm["ticari"],
+               "622": g_smm["uretim"] * hizmet_pay, "623": 0.0}
+        toplam_smm = g_smm["uretim"] + g_smm["ticari"]
+        for g, harf, ad, stoklar in (("uretim", "A", "150 GRUBU (İLK MADDE, YARI MAMUL, MAMUL + ÜRETİM)", ("150", "151", "152")),
+                                     ("ticari", "B", "153 TİCARİ MALLAR", ("153",))):
+            if g not in aktif and abs(satis[g]) < 0.005:
+                continue
+            satir.append(("bolum", harf, ad, None))
+            for s in stoklar:
+                if abs(b[s]) >= 0.005:
+                    k(s, f"{STOK[s]} (mizan bakiyesi)", b[s])
+            if g == "uretim":
+                for kod, ad_, t in (("710", "Direkt ilk madde ve malzeme (71x)", t71), ("720", "Direkt işçilik (72x)", t72),
+                                    ("730", "Genel üretim giderleri (73x)", t73), ("740", "Hizmet üretim maliyeti (74x)", t74)):
+                    if abs(t) >= 0.005:
+                        k(kod, ad_, t)
+            for kod in (("620", "622", "623") if g == "uretim" else ("621",)):
+                if abs(m62[kod]) >= 0.005:
+                    k(kod, "Mizanda kayıtlı " + SMM_AD[kod][:-4].lower(), m62[kod])
+            satir.append(("ara", harf + "1", "SATILABİLİR MALİYET", maliyet[g]))
+            k("", "Bu gruba düşen net satış", satis[g])
+            k("", f"Brüt kâr oranı %{(oran[g] or 0) * 100:g}", None)
+            satir.append(("ara", "SMM", f"SATIŞLARIN MALİYETİ = SATIŞ × (1 − %{(oran[g] or 0) * 100:g})", g_smm[g]))
+            satir.append(("ara", "DS", "DÖNEM SONU STOK (SATILABİLİR − SMM)", g_ds[g]))
+        for kod in ("620", "621", "622"):
+            if abs(smm[kod]) >= 0.005:
+                k(kod, SMM_AD[kod][:-4], smm[kod])
+        ozet_ek = {"satilabilir": sum(maliyet.values()), "grup_satis": satis}
     else:
         if kar_marji is None:
             raise ValueError("Brüt kâr oranı girilmedi.")
@@ -287,7 +349,7 @@ def envanter_analiz(h):
 
 def hesapla(hesaplar, stok=None, fgk_istisna=0.0, fgk_oran=0.10, vergi_orani=0.25, yontem="envanter",
             ds_stok=None, kar_marji=None, elle_miktar=None, elle_tutar=None, istirak=None, gecmis_zarar=0.0,
-            arge=0.0, bagis=0.0, bagis_tam=0.0):
+            arge=0.0, bagis=0.0, bagis_tam=0.0, ticari_satis=None):
     """hesaplar: {kebir: {'ad','bakiye'}} (bakiye = borç − alacak). stok: eski kullanım, 153 dönem sonu
     fiili stoğu (ds_stok={'153': stok} ile aynı). SMM yöntemleri için envanter_smm'e bakın.
     Dönüş: tablolar ve kontrol sonuçlarını içeren sözlük."""
@@ -315,7 +377,7 @@ def hesapla(hesaplar, stok=None, fgk_istisna=0.0, fgk_oran=0.10, vergi_orani=0.2
                             "girilmedi; bu stoklar satılmamış sayıldı. Sayım stokunu ya da brüt kâr oranını girin.")
         analiz["eksik"] = eksik
     analiz["secilen"] = yontem
-    envanter, smm_ozet, uy = envanter_smm(h, yontem, ds_stok, kar_marji, elle_miktar, elle_tutar)
+    envanter, smm_ozet, uy = envanter_smm(h, yontem, ds_stok, kar_marji, elle_miktar, elle_tutar, ticari_satis)
     uyarilar += uy
 
     # --- GELİR TABLOSU ---

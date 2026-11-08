@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                                QFileDialog, QMessageBox, QStackedWidget, QDialog, QComboBox, QSpinBox,
                                QFormLayout, QDialogButtonBox, QHeaderView, QTextEdit)
 
+import cikti
 import mizan
 import motor
 
@@ -96,7 +97,8 @@ class MaliTablolar(QWidget):
 
         ust = QHBoxLayout()
         for ad, fn in (("← Ana Sayfa", ana_sayfaya), ("Mizan Yükle…", self.yukle),
-                       ("Sütunları Düzelt…", self.esle), ("Excel'e Aktar…", self.aktar)):
+                       ("Sütunları Düzelt…", self.esle), ("Excel'e Aktar (formüllü)…", self.aktar),
+                       ("Yazdır…", self.yazdir), ("PDF'e Kaydet…", self.pdf)):
             b = QPushButton(ad)
             b.clicked.connect(fn)
             ust.addWidget(b)
@@ -129,13 +131,16 @@ class MaliTablolar(QWidget):
         self.ds = {s: alan("mizan bakiyesi") for s in motor.STOK}
         self.ds_oto = {s: alan("gerekirse", 110) for s in motor.STOK}
         self.marj_oto = alan("yoksa", 50)
-        self.marj = alan("örn. 25", 60)
+        self.marj = alan("örn. 25", 60)            # 150 grubu (150-152 + üretim)
+        self.marj153 = alan("örn. 20", 60)         # 153 ticari mal
+        self.ticari_satis = alan("boşsa maliyet payı", 150)
         self.marj2 = alan("örn. 25", 60)
         self.elle_miktar = alan("adet / kg", 110)
         self.elle_tutar = alan("örn. 400.000.000,00", 150)
         sayfalar = [[(f"{s} DS ₺:", self.ds_oto[s]) for s in motor.STOK] + [("veya brüt kâr %:", self.marj_oto)],
                     [(f"{s} {ad.split(' -')[0].title()} DS ₺:", self.ds[s]) for s, ad in motor.STOK.items()],
-                    [("Brüt kâr oranı % (brüt kâr / net satış):", self.marj)],
+                    [("Brüt kâr % — 150 grubu (mamul):", self.marj), ("153 ticari mal:", self.marj153),
+                     ("153 ticari mal satışı ₺:", self.ticari_satis)],
                     [("Satışa hazır stok miktarı:", self.elle_miktar), ("Stok tutarı ₺:", self.elle_tutar),
                      ("Brüt kâr oranı %:", self.marj2)]]
         for ciftler in sayfalar:
@@ -231,8 +236,9 @@ class MaliTablolar(QWidget):
         "olup olmadığı tanınır, SMM buna göre kurulur. Yalnız gerekirse sayım stoku ya da brüt kâr oranı ister.",
         "SMM = (150 + 151 + 152 + 153 mizan bakiyeleri − girilen dönem sonu stokları) + 710/720/730 üretim "
         "maliyetleri (→620) + 740 hizmet maliyeti (→622). Boş bırakılan stok mizan bakiyesinde kalır.",
-        "SMM = Net satış × (1 − brüt kâr oranı). Dönem sonu stok = 150-153 mizan bakiyeleri + 710/720/730/740 "
-        "− SMM; stok hesaplarına bakiyeleri oranında dağıtılır.",
+        "150 grubu (150-152 + 710/720/730/740, mamul satışı) ve 153 (ticari mal satışı) için AYRI brüt kâr oranı: "
+        "her grubun SMM'si = o grubun satışı × (1 − oranı), dönem sonu stok = satılabilir maliyet − SMM. Ticari mal "
+        "satışı boşsa net satış grupların satılabilir maliyeti oranında bölünür. Tek oran girerseniz ikisine de uygulanır.",
         "SMM = Net satış × (1 − brüt kâr oranı). Dönem sonu stok = elle yazılan stok tutarı + 710/720/730/740 "
         "− SMM; miktar ortalama birim maliyetle bulunur."]
 
@@ -252,6 +258,14 @@ class MaliTablolar(QWidget):
         i = self.yontem.currentIndex()
         yontem = motor.YONTEMLER[i]
         marj = self.deger({0: self.marj_oto, 2: self.marj}.get(i, self.marj2))
+        if i == 2:  # gruba göre ayrı oran; biri boşsa diğeri ikisine de uygulanır
+            m150, m153 = self.deger(self.marj), self.deger(self.marj153)
+            if m150 is None and m153 is None:
+                marj = None
+            else:
+                m150 = m153 if m150 is None else m150
+                m153 = m150 if m153 is None else m153
+                marj = {"150": m150, "153": m153}  # yüzde
         ds_w = {0: self.ds_oto, 1: self.ds}.get(i)
         ds_stok = {s: self.deger(w) for s, w in ds_w.items()} if ds_w else None
         eksik = ""
@@ -264,7 +278,9 @@ class MaliTablolar(QWidget):
         if i >= 2 and eksik:  # oran / tutar yokken fiili envanter (mizan bakiyeleri) ile göster
             yontem, marj = "envanter", None
         self.sonuc = r = motor.hesapla(
-            self.hesaplar, yontem=yontem, ds_stok=ds_stok, kar_marji=None if marj is None else marj / 100,
+            self.hesaplar, yontem=yontem, ds_stok=ds_stok,
+            kar_marji=None if marj is None else ({k: v / 100 for k, v in marj.items()} if isinstance(marj, dict) else marj / 100),
+            ticari_satis=self.deger(self.ticari_satis) if i == 2 else None,
             elle_miktar=self.deger(self.elle_miktar), elle_tutar=self.deger(self.elle_tutar),
             istirak=self.deger(self.istirak), gecmis_zarar=self.deger(self.gyz) or 0.0,
             arge=self.deger(self.arge) or 0.0, bagis=self.deger(self.bagis) or 0.0,
@@ -332,39 +348,40 @@ class MaliTablolar(QWidget):
             Path(self.dosya).stem + "_Mali_Tablolar.xlsx")), "Excel (*.xlsx)")
         if not yol:
             return
-        from openpyxl import Workbook
-        from openpyxl.styles import Font, PatternFill
-        wb = Workbook()
-        wb.remove(wb.active)
-        for ad, w in self.tablolar.items():
-            ws = wb.create_sheet(ad[:31])
-            if isinstance(w, QTextEdit):
-                for i, s in enumerate(w.toPlainText().splitlines(), 1):
-                    ws.cell(i, 1, s)
-                ws.column_dimensions["A"].width = 120
-                continue
-            for j in range(w.columnCount()):
-                c = ws.cell(1, j + 1, w.horizontalHeaderItem(j).text())
-                c.font = Font(bold=True)
-                ws.column_dimensions[chr(65 + j)].width = 18 if j % 3 != 1 else 55
-            for i in range(w.rowCount()):
-                for j in range(w.columnCount()):
-                    it = w.item(i, j)
-                    if not it or not it.text():
-                        continue
-                    txt = it.text()
-                    sayisal = bool(it.textAlignment() & Qt.AlignRight)
-                    c = ws.cell(i + 2, j + 1, mizan.sayi(txt) if sayisal and not txt.startswith("%") else txt)
-                    if sayisal:
-                        c.number_format = "#,##0.00"
-                    if it.font().bold():
-                        c.font = Font(bold=True)
-                        c.fill = PatternFill("solid", fgColor=it.background().color().name()[1:])
         try:
-            wb.save(yol)
+            cikti.excel_formullu(self.sonuc, self.hesaplar, yol, self.tablolar["Kontrol"].toPlainText())
         except PermissionError:
             QMessageBox.critical(self, UYGULAMA, "Dosya kaydedilemedi (Excel'de açık olabilir).")
             return
+        QMessageBox.information(self, UYGULAMA, f"Kaydedildi (toplam ve ara satırlar formüllü, kalemler "
+                                                f"'Kebir Mizan' sayfasına bağlı):\n{yol}")
+
+    def _belge(self):
+        from PySide6.QtGui import QTextDocument
+        d = QTextDocument()
+        d.setHtml(cikti.rapor_html(self.sonuc, Path(self.dosya).stem))
+        return d
+
+    def yazdir(self):
+        if not self.sonuc:
+            return
+        from PySide6.QtPrintSupport import QPrintDialog, QPrinter
+        p = QPrinter(QPrinter.HighResolution)
+        if QPrintDialog(p, self).exec():
+            self._belge().print_(p)
+
+    def pdf(self):
+        if not self.sonuc:
+            return
+        from PySide6.QtPrintSupport import QPrinter
+        yol, _ = QFileDialog.getSaveFileName(self, "PDF'e kaydet", str(Path(self.dosya).with_name(
+            Path(self.dosya).stem + "_Mali_Tablolar.pdf")), "PDF (*.pdf)")
+        if not yol:
+            return
+        p = QPrinter(QPrinter.HighResolution)
+        p.setOutputFormat(QPrinter.PdfFormat)
+        p.setOutputFileName(yol)
+        self._belge().print_(p)
         QMessageBox.information(self, UYGULAMA, f"Kaydedildi:\n{yol}")
 
 

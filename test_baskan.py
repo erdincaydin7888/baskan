@@ -185,3 +185,19 @@ def erp_sina():
 
 erp_sina()
 sina(ornek_mizan())
+
+
+def sina_ayri_marj():
+    """08.11: 150 grubu ve 153 için ayrı brüt kâr oranı."""
+    h = {"150": {"ad": "İLK MADDE", "bakiye": 200.0}, "710": {"ad": "DİMM", "bakiye": 300.0},
+         "153": {"ad": "TİCARİ MAL", "bakiye": 400.0}, "600": {"ad": "SATIŞ", "bakiye": -1000.0},
+         "100": {"ad": "KASA", "bakiye": 100.0}}
+    h["500"] = {"ad": "SERMAYE", "bakiye": -sum(v["bakiye"] for v in h.values())}
+    r = motor.hesapla(h, yontem="marj", kar_marji={"150": 0.40, "153": 0.20}, ticari_satis=300.0)
+    assert abs(r["smm"]["smm"] - 660) < 1e-6 and r["fark"] == 0          # 300×0,8 + 700×0,6
+    assert abs(r["smm"]["donem_sonu_stok"]["153"] - 160) < 1e-6
+    assert abs(motor.hesapla(h, yontem="marj", kar_marji=0.30)["smm"]["smm"] - 700) < 1e-6  # tek oran: eski yol
+    print("ayrı kâr marjı: tamam")
+
+
+sina_ayri_marj()
