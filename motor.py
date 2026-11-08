@@ -138,10 +138,15 @@ def envanter_smm(h, yontem="envanter", ds_stok=None, kar_marji=None, elle_miktar
         maliyet = {"uretim": b["150"] + b["151"] + b["152"] + t71 + t72 + t73 + t74 + m62["620"] + m62["622"] + m62["623"],
                    "ticari": b["153"] + m62["621"]}
         oran = {"uretim": kar_marji.get("150"), "ticari": kar_marji.get("153")}
+        # 08.11 (Kenan Bey): aynı satırda dönem sonu stok da girilebilir — stok doluysa stoktan, boşsa orandan.
+        # 150 grubunun stoku = girilen 150 + 151/152 mizan bakiyeleri.
+        stok = {"uretim": None if ds_stok.get("150") is None else ds_stok["150"] + b["151"] + b["152"],
+                "ticari": ds_stok.get("153")}
         aktif = [g for g in maliyet if maliyet[g] > 0.005]
         for g in aktif:
-            if oran[g] is None:
-                raise ValueError(("150 grubu" if g == "uretim" else "153 ticari mal") + " brüt kâr oranı girilmedi.")
+            if oran[g] is None and stok[g] is None:
+                raise ValueError(("150 grubu" if g == "uretim" else "153 ticari mal") +
+                                 " için brüt kâr oranı ya da dönem sonu stok girilmedi.")
         if ticari_satis is not None:
             satis = {"ticari": ticari_satis, "uretim": net_satis - ticari_satis}
         elif len(aktif) == 1:
@@ -149,10 +154,10 @@ def envanter_smm(h, yontem="envanter", ds_stok=None, kar_marji=None, elle_miktar
         else:
             pay = maliyet["ticari"] / (maliyet["ticari"] + maliyet["uretim"]) if aktif else 0.0
             satis = {"ticari": net_satis * pay, "uretim": net_satis * (1 - pay)}
-            if aktif:
+            if any(stok[g] is None for g in aktif):   # bölüşüm yalnız oranla hesaplanan grubu etkiler
                 uy.append(f"Ticari mal satış tutarı girilmedi: net satışın %{pay * 100:.1f}'i (satılabilir maliyet "
                           "payı) 153'e, kalanı 150 grubuna sayıldı. Gerçek ticari mal satışını alana yazın.")
-        g_smm = {g: satis[g] * (1 - (oran[g] or 0.0)) for g in maliyet}
+        g_smm = {g: (maliyet[g] - stok[g]) if stok[g] is not None else satis[g] * (1 - (oran[g] or 0.0)) for g in maliyet}
         g_ds = {g: maliyet[g] - g_smm[g] for g in maliyet}
         for g in maliyet:
             if g_ds[g] < -0.005:
@@ -162,6 +167,8 @@ def envanter_smm(h, yontem="envanter", ds_stok=None, kar_marji=None, elle_miktar
         if not sum(agirlik.values()):
             agirlik["152"] = 1.0
         ds = {s: g_ds["uretim"] * agirlik[s] / sum(agirlik.values()) for s in agirlik}
+        if stok["uretim"] is not None:   # girilen 150, 151/152 mizanda kalır
+            ds = {"150": ds_stok["150"], "151": b["151"], "152": b["152"]}
         ds["153"] = g_ds["ticari"]
         hizmet_pay = (t74 + m62["622"]) / maliyet["uretim"] if maliyet["uretim"] else 0.0
         smm = {"620": g_smm["uretim"] * (1 - hizmet_pay), "621": g_smm["ticari"],
@@ -184,9 +191,13 @@ def envanter_smm(h, yontem="envanter", ds_stok=None, kar_marji=None, elle_miktar
                 if abs(m62[kod]) >= 0.005:
                     k(kod, "Mizanda kayıtlı " + SMM_AD[kod][:-4].lower(), m62[kod])
             satir.append(("ara", harf + "1", "SATILABİLİR MALİYET", maliyet[g]))
-            k("", "Bu gruba düşen net satış", satis[g])
-            k("", f"Brüt kâr oranı %{(oran[g] or 0) * 100:g}", None)
-            satir.append(("ara", "SMM", f"SATIŞLARIN MALİYETİ = SATIŞ × (1 − %{(oran[g] or 0) * 100:g})", g_smm[g]))
+            if stok[g] is not None:
+                k("150" if g == "uretim" else "153", "Dönem sonu stok (girilen" + (" 150 + 151/152 mizan)" if g == "uretim" else ")"), -stok[g])
+                satir.append(("ara", "SMM", "SATIŞLARIN MALİYETİ = SATILABİLİR − DÖNEM SONU STOK", g_smm[g]))
+            else:
+                k("", "Bu gruba düşen net satış", satis[g])
+                k("", f"Brüt kâr oranı %{(oran[g] or 0) * 100:g}", None)
+                satir.append(("ara", "SMM", f"SATIŞLARIN MALİYETİ = SATIŞ × (1 − %{(oran[g] or 0) * 100:g})", g_smm[g]))
             satir.append(("ara", "DS", "DÖNEM SONU STOK (SATILABİLİR − SMM)", g_ds[g]))
         for kod in ("620", "621", "622"):
             if abs(smm[kod]) >= 0.005:

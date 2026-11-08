@@ -2,7 +2,7 @@
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QSettings
 from PySide6.QtGui import QFont, QColor
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
                                QPushButton, QLabel, QLineEdit, QTabWidget, QTableWidget, QTableWidgetItem,
@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                                QFormLayout, QDialogButtonBox, QHeaderView, QTextEdit)
 
 import cikti
+import kayit
 import mizan
 import motor
 
@@ -45,8 +46,19 @@ def tablo_doldur(tbl, basliklar, satirlar):
                 it.setBackground(QColor(RENK[tur]))
                 it.setFont(kalin)
             tbl.setItem(i, j, it)
-    tbl.resizeColumnsToContents()
-    tbl.horizontalHeader().setStretchLastSection(True)
+    # 08.11 (Kenan Bey): elle ayarlanan sütun genişliği yeniden hesaplamada / sekme geçişinde bozulmasın →
+    # yalnız İLK doldurmada boyutla; sonra kullanıcının genişliği kalır ve QSettings'te saklanır (açılışta geri gelir).
+    if not tbl.property("genislik_ayarli"):
+        ayar, anahtar = QSettings("Baskan", "Baskan"), f"sutun/{tbl.objectName() or 'tablo'}"
+        kayitli = ayar.value(anahtar) or []
+        if len(kayitli) == tbl.columnCount():
+            for j, g in enumerate(kayitli):
+                tbl.setColumnWidth(j, int(g))
+        else:
+            tbl.resizeColumnsToContents()
+        tbl.setProperty("genislik_ayarli", True)
+        tbl.horizontalHeader().sectionResized.connect(
+            lambda *_: ayar.setValue(anahtar, [tbl.columnWidth(j) for j in range(tbl.columnCount())]))
 
 
 class EslemeDialog(QDialog):
@@ -89,6 +101,64 @@ class EslemeDialog(QDialog):
         return self.satir.value() - 1, {r: cb.currentIndex() - 1 for r, cb in self.kutu.items() if cb.currentIndex() > 0}
 
 
+class KiyasPencere(QDialog):
+    """İki dönemin gelir tablosu, bilanço ve vergi/rasyoları yan yana: 1. dönem | 2. dönem | fark | değişim."""
+
+    def __init__(self, ad1, ad2, k, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Karşılaştırma: {ad1}  →  {ad2}")
+        self.resize(1250, 800)
+        self.k, self.ad1, self.ad2 = k, ad1, ad2
+        lay = QVBoxLayout(self)
+        ust = QHBoxLayout()
+        ust.addWidget(QLabel(f"<b>1:</b> {ad1} &nbsp;&nbsp; <b>2:</b> {ad2}"))
+        ust.addStretch()
+        b = QPushButton("Excel'e Aktar…")
+        b.clicked.connect(self.aktar)
+        ust.addWidget(b)
+        lay.addLayout(ust)
+        sek = QTabWidget()
+        self.basliklar = ["Kod", "Kalem", ad1, ad2, "Fark", "Değişim"]
+        for ad, anahtar in (("Gelir Tablosu", "gelir"), ("Bilanço", "bilanco"), ("Vergi ve Rasyolar", "ozet")):
+            t = QTableWidget()
+            t.setObjectName("kiyas-" + anahtar)
+            tablo_doldur(t, self.basliklar, [(tur, [kod, ad_, a, b_, f, yuzde(o)]) for tur, kod, ad_, a, b_, f, o in k[anahtar]])
+            sek.addTab(t, ad)
+        lay.addWidget(sek)
+
+    def aktar(self):
+        yol, _ = QFileDialog.getSaveFileName(self, "Excel'e aktar", "Karsilastirma.xlsx", "Excel (*.xlsx)")
+        if not yol:
+            return
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill
+        wb = Workbook()
+        wb.remove(wb.active)
+        for ad, anahtar in (("Gelir Tablosu", "gelir"), ("Bilanço", "bilanco"), ("Vergi ve Rasyolar", "ozet")):
+            ws = wb.create_sheet(ad)
+            ws.append(self.basliklar)
+            for c in ws[1]:
+                c.font = Font(bold=True)
+            for n, (tur, kod, ad_, a, b_, f, o) in enumerate(self.k[anahtar], 2):
+                ws.append([kod, ad_, a, b_, f"=IF(AND(C{n}=\"\",D{n}=\"\"),\"\",N(D{n})-N(C{n}))",
+                           f"=IF(N(C{n})=0,\"\",E{n}/ABS(C{n}))"])
+                for j in (3, 4, 5):
+                    ws.cell(n, j).number_format = "#,##0.00;[Red]-#,##0.00"
+                ws.cell(n, 6).number_format = "0.0%"
+                if tur in RENK:
+                    for j in range(1, 7):
+                        ws.cell(n, j).font = Font(bold=True)
+                        ws.cell(n, j).fill = PatternFill("solid", fgColor=RENK[tur][1:])
+            for j, g in enumerate((10, 50, 18, 18, 18, 10), 1):
+                ws.column_dimensions[chr(64 + j)].width = g
+        try:
+            wb.save(yol)
+        except PermissionError:
+            QMessageBox.critical(self, UYGULAMA, "Dosya kaydedilemedi (Excel'de açık olabilir).")
+            return
+        QMessageBox.information(self, UYGULAMA, f"Kaydedildi:\n{yol}")
+
+
 class MaliTablolar(QWidget):
     def __init__(self, ana_sayfaya):
         super().__init__()
@@ -104,6 +174,27 @@ class MaliTablolar(QWidget):
             ust.addWidget(b)
         ust.addStretch()
         lay.addLayout(ust)
+
+        # 08.11 (Kenan Bey): birden çok firma, dönem kaydı, eski dönemleri açma, iki dönem karşılaştırma
+        fd = QHBoxLayout()
+        fd.addWidget(QLabel("Firma:"))
+        self.firma = QComboBox()
+        self.firma.setEditable(True)
+        self.firma.setMinimumWidth(220)
+        self.firma.lineEdit().setPlaceholderText("firma adı")
+        fd.addWidget(self.firma)
+        fd.addWidget(QLabel("Dönem:"))
+        self.donem = QLineEdit()
+        self.donem.setPlaceholderText("örn. 2026/09 ya da 2026-3. çeyrek")
+        self.donem.setFixedWidth(200)
+        fd.addWidget(self.donem)
+        for ad, fn in (("Kaydet", self.kaydet), ("Kayıtlı Dönemler…", self.kayitlar), ("İki Dönemi Karşılaştır…", self.karsilastir)):
+            b = QPushButton(ad)
+            b.clicked.connect(fn)
+            fd.addWidget(b)
+        fd.addStretch()
+        lay.addLayout(fd)
+        self.firmalari_yenile()
 
         def alan(yer="", gen=130):
             w = QLineEdit()
@@ -133,14 +224,17 @@ class MaliTablolar(QWidget):
         self.marj_oto = alan("yoksa", 50)
         self.marj = alan("örn. 25", 60)            # 150 grubu (150-152 + üretim)
         self.marj153 = alan("örn. 20", 60)         # 153 ticari mal
-        self.ticari_satis = alan("boşsa maliyet payı", 150)
+        self.ticari_satis = alan("boşsa maliyet payı", 130)
+        self.ds150m = alan("veya stok ₺", 120)     # 08.11: oran yerine dönem sonu stok (doluysa o kullanılır)
+        self.ds153m = alan("veya stok ₺", 120)
         self.marj2 = alan("örn. 25", 60)
         self.elle_miktar = alan("adet / kg", 110)
         self.elle_tutar = alan("örn. 400.000.000,00", 150)
         sayfalar = [[(f"{s} DS ₺:", self.ds_oto[s]) for s in motor.STOK] + [("veya brüt kâr %:", self.marj_oto)],
                     [(f"{s} {ad.split(' -')[0].title()} DS ₺:", self.ds[s]) for s, ad in motor.STOK.items()],
-                    [("Brüt kâr % — 150 grubu (mamul):", self.marj), ("153 ticari mal:", self.marj153),
-                     ("153 ticari mal satışı ₺:", self.ticari_satis)],
+                    [("150 grubu (mamul) kâr %:", self.marj), ("ya da DS ₺:", self.ds150m),
+                     ("153 ticari mal kâr %:", self.marj153), ("ya da DS ₺:", self.ds153m),
+                     ("153 satışı ₺:", self.ticari_satis)],
                     [("Satışa hazır stok miktarı:", self.elle_miktar), ("Stok tutarı ₺:", self.elle_tutar),
                      ("Brüt kâr oranı %:", self.marj2)]]
         for ciftler in sayfalar:
@@ -187,11 +281,12 @@ class MaliTablolar(QWidget):
         for ad in ("Kontrol", "Kebir Mizan", "Envanter ve SMM", "Gelir Tablosu", "Detaylı Bilanço",
                    "FGK Hesaplama", "Vergi ve Rasyolar"):
             w = QTextEdit() if ad == "Kontrol" else QTableWidget()
+            w.setObjectName(ad)
             if ad == "Kontrol":
                 w.setReadOnly(True)
             self.tablolar[ad] = w
             self.sekme.addTab(w, ad)
-        lay.addWidget(self.sekme)
+        lay.addWidget(self.sekme, 1)   # boş yükseklik tablolara gitsin (giriş satırları arasında boşluk açılmasın)
 
     # --- dosya ---
     def yukle(self):
@@ -236,7 +331,7 @@ class MaliTablolar(QWidget):
         "olup olmadığı tanınır, SMM buna göre kurulur. Yalnız gerekirse sayım stoku ya da brüt kâr oranı ister.",
         "SMM = (150 + 151 + 152 + 153 mizan bakiyeleri − girilen dönem sonu stokları) + 710/720/730 üretim "
         "maliyetleri (→620) + 740 hizmet maliyeti (→622). Boş bırakılan stok mizan bakiyesinde kalır.",
-        "150 grubu (150-152 + 710/720/730/740, mamul satışı) ve 153 (ticari mal satışı) için AYRI brüt kâr oranı: "
+        "150 grubu ve 153 için ayrı ayrı: dönem sonu stok (DS) doluysa SMM = satılabilir maliyet − DS, boşsa brüt kâr oranı: "
         "her grubun SMM'si = o grubun satışı × (1 − oranı), dönem sonu stok = satılabilir maliyet − SMM. Ticari mal "
         "satışı boşsa net satış grupların satılabilir maliyeti oranında bölünür. Tek oran girerseniz ikisine de uygulanır.",
         "SMM = Net satış × (1 − brüt kâr oranı). Dönem sonu stok = elle yazılan stok tutarı + 710/720/730/740 "
@@ -252,41 +347,56 @@ class MaliTablolar(QWidget):
         s = w.text().strip()
         return mizan.sayi(s) if s else None
 
-    def hesapla(self):
-        if not self.hesaplar:
-            return
+    def parametreler(self):
+        """Ekrandaki girdilerden motor.hesapla parametreleri → (kwargs, eksik uyarısı). Kayıtta da bu saklanır."""
         i = self.yontem.currentIndex()
         yontem = motor.YONTEMLER[i]
-        marj = self.deger({0: self.marj_oto, 2: self.marj}.get(i, self.marj2))
-        if i == 2:  # gruba göre ayrı oran; biri boşsa diğeri ikisine de uygulanır
-            m150, m153 = self.deger(self.marj), self.deger(self.marj153)
-            if m150 is None and m153 is None:
-                marj = None
-            else:
-                m150 = m153 if m150 is None else m150
-                m153 = m150 if m153 is None else m153
-                marj = {"150": m150, "153": m153}  # yüzde
+        marj = self.deger(self.marj_oto) if i == 0 else self.deger(self.marj2) if i == 3 else None
         ds_w = {0: self.ds_oto, 1: self.ds}.get(i)
         ds_stok = {s: self.deger(w) for s, w in ds_w.items()} if ds_w else None
         eksik = ""
-        if i == 1 and not any(v is not None for v in ds_stok.values()):
+        if i == 2:  # 150 / 153: stok doluysa stoktan, boşsa orandan; oranı da boş grup diğer oranı alır
+            m150, m153 = self.deger(self.marj), self.deger(self.marj153)
+            s150, s153 = self.deger(self.ds150m), self.deger(self.ds153m)
+            if s150 is None and m150 is None:
+                m150 = m153
+            if s153 is None and m153 is None:
+                m153 = m150
+            marj = {"150": m150, "153": m153}
+            ds_stok = {"150": s150, "153": s153}
+            if all(v is None for v in (m150, m153, s150, s153)):
+                eksik = "   ⚠ 150 / 153 için brüt kâr oranı ya da dönem sonu stok girin"
+        elif i == 1 and not any(v is not None for v in ds_stok.values()):
             eksik = "   ⚠ Dönem sonu stoklarını girin"
-        elif i >= 2 and marj is None:
+        elif i == 3 and marj is None:
             eksik = "   ⚠ Brüt kâr oranını girin"
         elif i == 3 and self.deger(self.elle_tutar) is None:
             eksik = "   ⚠ Stok tutarını girin"
         if i >= 2 and eksik:  # oran / tutar yokken fiili envanter (mizan bakiyeleri) ile göster
-            yontem, marj = "envanter", None
-        self.sonuc = r = motor.hesapla(
-            self.hesaplar, yontem=yontem, ds_stok=ds_stok,
-            kar_marji=None if marj is None else ({k: v / 100 for k, v in marj.items()} if isinstance(marj, dict) else marj / 100),
-            ticari_satis=self.deger(self.ticari_satis) if i == 2 else None,
-            elle_miktar=self.deger(self.elle_miktar), elle_tutar=self.deger(self.elle_tutar),
-            istirak=self.deger(self.istirak), gecmis_zarar=self.deger(self.gyz) or 0.0,
-            arge=self.deger(self.arge) or 0.0, bagis=self.deger(self.bagis) or 0.0,
-            bagis_tam=self.deger(self.bagis_tam) or 0.0,
-            fgk_istisna=mizan.sayi(self.istisna.text()), fgk_oran=mizan.sayi(self.oran.text()) / 100,
-            vergi_orani=mizan.sayi(self.vergi.text()) / 100)
+            yontem, marj, ds_stok = "envanter", None, None
+        kar = None if marj is None else (
+            {k: (None if v is None else v / 100) for k, v in marj.items()} if isinstance(marj, dict) else marj / 100)
+        kw = dict(yontem=yontem, ds_stok=ds_stok, kar_marji=kar,
+                  ticari_satis=self.deger(self.ticari_satis) if i == 2 else None,
+                  elle_miktar=self.deger(self.elle_miktar), elle_tutar=self.deger(self.elle_tutar),
+                  istirak=self.deger(self.istirak), gecmis_zarar=self.deger(self.gyz) or 0.0,
+                  arge=self.deger(self.arge) or 0.0, bagis=self.deger(self.bagis) or 0.0,
+                  bagis_tam=self.deger(self.bagis_tam) or 0.0,
+                  fgk_istisna=mizan.sayi(self.istisna.text()), fgk_oran=mizan.sayi(self.oran.text()) / 100,
+                  vergi_orani=mizan.sayi(self.vergi.text()) / 100)
+        return kw, eksik
+
+    def hesapla(self):
+        if not self.hesaplar or getattr(self, "_yukleniyor", False):
+            return
+        i = self.yontem.currentIndex()
+        kw, eksik = self.parametreler()
+        try:
+            self.sonuc = r = motor.hesapla(self.hesaplar, **kw)
+        except ValueError as e:   # ör. bir grup için ne oran ne stok girilmiş
+            self.durum.setText(f"⚠ {e}")
+            self.durum.setStyleSheet("font-weight:bold; padding:4px; color:#b00020")
+            return
         dengede = r["fark"] == 0
         s = r["smm"]
         a = r["analiz"]
@@ -297,7 +407,7 @@ class MaliTablolar(QWidget):
             self.yontem_aciklama.setText(a["metin"][-1])
             if a.get("eksik"):
                 eksik = "   ⚠ " + ", ".join(a["eksik"]) + " dönem sonu stoku veya brüt kâr oranı gerekli"
-        self.durum.setText(f"{Path(self.dosya).name} — {len(self.hesaplar)} kebir hesap — " +
+        self.durum.setText(f"{self.etiket()} — {len(self.hesaplar)} kebir hesap — " +
                            ("✔ BİLANÇO DENGEDE" if dengede else f"❌ DENGESİZ: {tl(r['fark'])}") +
                            ("" if eksik else f" — SMM {tl(s['smm'])} — Brüt kâr {tl(s['brut_kar'])}" +
                             (f" ({yuzde(s['brut_oran'])})" if s["brut_oran"] is not None else "")) + eksik)
@@ -305,7 +415,7 @@ class MaliTablolar(QWidget):
         self.goster(r)
 
     def goster(self, r):
-        es = self.ham[2]
+        es = self.ham[2] if self.ham else {}
         uy = r["uyarilar"] + self.okuma_uyari
         self.tablolar["Kontrol"].setPlainText(
             "Okunan sütunlar: " + ", ".join(f"{mizan.ROL_AD[k]} = Sütun {v + 1}" for k, v in es.items()) +
@@ -339,6 +449,144 @@ class MaliTablolar(QWidget):
                       for ad, t in r["vergi"]] + [("bolum", ["FİNANSAL RASYOLAR", ""])] +
                      [("", [ad, "" if v is None else f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")])
                       for ad, v in r["rasyo"]])
+
+    # --- firma / dönem kayıtları (08.11) ---
+    GIRDI_ALANLARI = ("marj_oto", "marj", "marj153", "ticari_satis", "ds150m", "ds153m", "marj2", "elle_miktar",
+                      "elle_tutar", "istisna", "oran", "vergi", "istirak", "gyz", "arge", "bagis", "bagis_tam")
+
+    def etiket(self):
+        f, d = self.firma.currentText().strip(), self.donem.text().strip()
+        return f"{f} · {d}" if f and d else (Path(self.dosya).name if self.dosya else "")
+
+    def firmalari_yenile(self):
+        secili = self.firma.currentText()
+        self.firma.blockSignals(True)
+        self.firma.clear()
+        self.firma.addItems(sorted({f for f, *_ in kayit.liste()}, key=str.lower))
+        self.firma.setEditText(secili)
+        self.firma.blockSignals(False)
+
+    def girdiler(self):
+        g = {a: getattr(self, a).text() for a in self.GIRDI_ALANLARI}
+        g.update({f"ds{s}": w.text() for s, w in self.ds.items()})
+        g.update({f"ds_oto{s}": w.text() for s, w in self.ds_oto.items()})
+        g["yontem"] = self.yontem.currentIndex()
+        return g
+
+    def girdileri_yaz(self, g):
+        self._yukleniyor = True   # her setText yeniden hesaplamasın
+        try:
+            for a in self.GIRDI_ALANLARI:
+                getattr(self, a).setText(g.get(a, ""))
+            for s, w in self.ds.items():
+                w.setText(g.get(f"ds{s}", ""))
+            for s, w in self.ds_oto.items():
+                w.setText(g.get(f"ds_oto{s}", ""))
+            self.yontem.setCurrentIndex(int(g.get("yontem", 0)))
+        finally:
+            self._yukleniyor = False
+
+    def kaydet(self):
+        if not self.hesaplar:
+            QMessageBox.warning(self, UYGULAMA, "Önce bir mizan yükleyin.")
+            return
+        f, d = self.firma.currentText().strip(), self.donem.text().strip()
+        if not f or not d:
+            QMessageBox.warning(self, UYGULAMA, "Firma adını ve dönemi yazın (örn. 2026/09).")
+            return
+        var = any(ff == f and dd == d for ff, dd, *_ in kayit.liste())
+        if var and QMessageBox.question(self, UYGULAMA, f"{f} · {d} zaten kayıtlı. Üzerine yazılsın mı?") != QMessageBox.Yes:
+            return
+        kw, _ = self.parametreler()
+        g = self.girdiler()
+        g["_parametreler"] = kw
+        yol = kayit.kaydet(f, d, self.hesaplar, g, str(self.dosya or ""))
+        self.firmalari_yenile()
+        self.durum.setText(f"✔ Kaydedildi: {f} · {d}  ({yol})")
+
+    def kayit_ac(self, yol):
+        v = kayit.oku(yol)
+        self.hesaplar, self.okuma_uyari, self.ham = v["hesaplar"], [], None
+        self.dosya = v.get("kaynak_dosya") or f"{v['firma']}.xlsx"
+        self.firma.setEditText(v["firma"])
+        self.donem.setText(v["donem"])
+        self.girdileri_yaz(v.get("girdiler", {}))
+        self.hesapla()
+
+    def kayitlar(self):
+        l = kayit.liste()
+        if not l:
+            QMessageBox.information(self, UYGULAMA, f"Henüz kayıtlı dönem yok.\nKayıt klasörü: {kayit.KOK}")
+            return
+        d = QDialog(self)
+        d.setWindowTitle("Kayıtlı dönemler")
+        d.resize(620, 420)
+        lay = QVBoxLayout(d)
+        lay.addWidget(QLabel(f"Kayıt klasörü: {kayit.KOK}"))
+        t = QTableWidget(len(l), 3)
+        t.setHorizontalHeaderLabels(["Firma", "Dönem", "Kaydedilme"])
+        for i, (f, dn, tarih, _) in enumerate(l):
+            for j, x in enumerate((f, dn, tarih)):
+                it = QTableWidgetItem(x)
+                it.setFlags(it.flags() & ~Qt.ItemIsEditable)
+                t.setItem(i, j, it)
+        t.setSelectionBehavior(QTableWidget.SelectRows)
+        t.resizeColumnsToContents()
+        t.horizontalHeader().setStretchLastSection(True)
+        lay.addWidget(t)
+        alt = QHBoxLayout()
+        for ad, fn in (("Aç", lambda: (self.kayit_ac(l[t.currentRow()][3]), d.accept()) if t.currentRow() >= 0 else None),
+                       ("Sil", lambda: self._kayit_sil(l, t, d))):
+            b = QPushButton(ad)
+            b.clicked.connect(fn)
+            alt.addWidget(b)
+        t.doubleClicked.connect(lambda *_: (self.kayit_ac(l[t.currentRow()][3]), d.accept()))
+        alt.addStretch()
+        lay.addLayout(alt)
+        d.exec()
+
+    def _kayit_sil(self, l, t, d):
+        i = t.currentRow()
+        if i < 0:
+            return
+        f, dn, _, yol = l[i]
+        if QMessageBox.question(self, UYGULAMA, f"{f} · {dn} kaydı silinsin mi?") == QMessageBox.Yes:
+            kayit.sil(yol)
+            self.firmalari_yenile()
+            d.accept()
+            self.kayitlar()
+
+    def karsilastir(self):
+        l = kayit.liste()
+        if len(l) < 2:
+            QMessageBox.information(self, UYGULAMA, "Karşılaştırma için en az iki kayıtlı dönem gerekir (Kaydet ile ekleyin).")
+            return
+        d = QDialog(self)
+        d.setWindowTitle("İki dönemi karşılaştır")
+        form = QFormLayout(d)
+        adlar = [f"{f} · {dn}" for f, dn, *_ in l]
+        c1, c2 = QComboBox(), QComboBox()
+        c1.addItems(adlar)
+        c2.addItems(adlar)
+        c1.setCurrentIndex(max(0, len(l) - 2))
+        c2.setCurrentIndex(len(l) - 1)
+        form.addRow("1. dönem (eski):", c1)
+        form.addRow("2. dönem (yeni):", c2)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(d.accept)
+        bb.rejected.connect(d.reject)
+        form.addRow(bb)
+        if not d.exec():
+            return
+        try:
+            r = []
+            for c in (c1, c2):
+                v = kayit.oku(l[c.currentIndex()][3])
+                r.append(motor.hesapla(v["hesaplar"], **v.get("girdiler", {}).get("_parametreler", {})))
+        except (ValueError, TypeError) as e:
+            QMessageBox.critical(self, UYGULAMA, f"Karşılaştırma hesaplanamadı: {e}")
+            return
+        KiyasPencere(adlar[c1.currentIndex()], adlar[c2.currentIndex()], kayit.karsilastir(*r), self).show()
 
     # --- dışa aktar ---
     def aktar(self):

@@ -201,3 +201,24 @@ def sina_ayri_marj():
 
 
 sina_ayri_marj()
+
+
+def sina_stok_veya_oran():
+    """08.11 (Kenan Bey): 150 / 153 satırında stok doluysa stoktan, boşsa orandan."""
+    h = {"150": {"ad": "İLK MADDE", "bakiye": 200.0}, "710": {"ad": "DİMM", "bakiye": 300.0},
+         "153": {"ad": "TİCARİ MAL", "bakiye": 400.0}, "600": {"ad": "SATIŞ", "bakiye": -1000.0},
+         "100": {"ad": "KASA", "bakiye": 100.0}}
+    h["500"] = {"ad": "SERMAYE", "bakiye": -sum(v["bakiye"] for v in h.values())}
+    r = motor.hesapla(h, yontem="marj", kar_marji={"150": 0.40, "153": None}, ds_stok={"153": 100.0}, ticari_satis=300.0)
+    assert abs(r["smm"]["smm"] - 720) < 1e-6 and r["fark"] == 0          # 153: 400−100 ; 150: 700×0,6
+    h3 = {k: dict(v) for k, v in h.items() if k not in ("150", "710")}
+    h3["500"]["bakiye"] = 0.0
+    h3["500"]["bakiye"] = -sum(v["bakiye"] for v in h3.values())
+    r3 = motor.hesapla(h3, yontem="marj", kar_marji={"150": None, "153": None}, ds_stok={"153": 100.0})
+    assert abs(r3["smm"]["smm"] - 300) < 1e-6, "maliyeti olmayan 150 grubuna satış yazılmamalı"
+    import kayit
+    kayit.sina()
+    print("stok veya oran + kayıt: tamam")
+
+
+sina_stok_veya_oran()
