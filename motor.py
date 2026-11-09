@@ -71,7 +71,8 @@ def envanter_smm(h, yontem="envanter", ds_stok=None, kar_marji=None, elle_miktar
     h yerinde değişir: stoklar dönem sonu değerine, 71x-74x sıfırlanıp 62x'e aktarılır.
     yontem: 'envanter' = dönem sonu fiili stoklar elle (girilmeyen stok mizan bakiyesinde kalır),
             'marj'     = SMM = net satış × (1 − brüt kâr oranı), satılabilir maliyet mizandan,
-            'elle'     = satışa hazır stok miktar + tutarı elle, SMM brüt kâr oranından.
+            'elle'     = depoda sayılan dönem sonu stok miktar + tutarı elle, SMM = satılabilir − stok
+                         (brüt kâr oranı verilirse yalnız kontrol).
     kar_marji: brüt kâr / net satış (0,25 = %25) ya da {'150': oran, '153': oran} (gruba göre ayrı; ticari_satis
                = 153'ten yapılan net satış, verilmezse satılabilir maliyet payıyla bölünür). Dönüş: (tablo satırları, özet sözlüğü, uyarılar)."""
     uy, satir = [], []  # satır: (tür, kod, açıklama, tutar)
@@ -204,20 +205,20 @@ def envanter_smm(h, yontem="envanter", ds_stok=None, kar_marji=None, elle_miktar
                 k(kod, SMM_AD[kod][:-4], smm[kod])
         ozet_ek = {"satilabilir": sum(maliyet.values()), "grup_satis": satis}
     else:
-        if kar_marji is None:
+        # 09.11 (Kenan Bey): 'elle' = depoda sayılan DÖNEM SONU stok (ör. 30.09'da satışa hazır stok) miktar + tutarı.
+        # SMM = satılabilir maliyet (mizan stokları + 71x-74x + kayıtlı 62x) − sayılan stok; oran yalnız kontrol.
+        if yontem == "elle" and elle_tutar is None:
+            raise ValueError("Dönem sonu stok tutarı girilmedi.")
+        if kar_marji is None and yontem != "elle":
             raise ValueError("Brüt kâr oranı girilmedi.")
-        if yontem == "elle":
-            if elle_tutar is None:
-                raise ValueError("Satışa hazır stok tutarı girilmedi.")
-            stok_baz, kayitli62 = elle_tutar, 0.0
-            if abs(sum(m62.values())) >= 0.005:
-                uy.append("Mizandaki 62x kayıtları yerine brüt kâr oranından hesaplanan SMM kullanıldı.")
-        else:
-            stok_baz, kayitli62 = sum(b.values()), sum(m62.values())
+        stok_baz, kayitli62 = sum(b.values()), sum(m62.values())
         uretim = t71 + t72 + t73
         satilabilir = stok_baz + uretim + t74 + kayitli62
-        toplam_smm = net_satis * (1 - kar_marji)
+        toplam_smm = satilabilir - elle_tutar if yontem == "elle" else net_satis * (1 - kar_marji)
         ds_top = satilabilir - toplam_smm
+        if yontem == "elle" and toplam_smm < -0.005:
+            uy.append(f"Girilen dönem sonu stok ({elle_tutar:,.2f}) satılabilir mal maliyetini ({satilabilir:,.2f}) "
+                      "aşıyor: SMM negatif çıktı. Stok tutarını ya da mizandaki alışları kontrol edin.")
         if ds_top < -0.005:
             uy.append(f"Brüt kâr oranıyla bulunan SMM ({toplam_smm:,.2f}) satılabilir mal maliyetini "
                       f"({satilabilir:,.2f}) aşıyor: dönem sonu stok negatif çıktı, oranı kontrol edin.")
@@ -228,22 +229,19 @@ def envanter_smm(h, yontem="envanter", ds_stok=None, kar_marji=None, elle_miktar
         ag_top = sum(agirlik.values())
         ds = {s: ds_top * agirlik[s] / ag_top for s in STOK}
         # SMM, maliyet kaynağına göre 620 / 621 / 622'ye oranla bölünür
-        ticari = stok_baz * agirlik["153"] / ag_top + m62["621"] * (yontem == "marj")
-        hizmet = t74 + m62["622"] * (yontem == "marj")
+        ticari = stok_baz * agirlik["153"] / ag_top + m62["621"]
+        hizmet = t74 + m62["622"]
         oran = (lambda x: x / satilabilir) if satilabilir else (lambda x: 0.0)
         s621, s622 = toplam_smm * oran(ticari), toplam_smm * oran(hizmet)
         smm = {"620": toplam_smm - s621 - s622, "621": s621, "622": s622, "623": 0.0}
 
         satir.append(("bolum", "A", "SATILABİLİR MAL MALİYETİ", satilabilir))
-        if yontem == "elle":
-            k("STOK", "Elle girilen satışa hazır stok tutarı", elle_tutar)
-        else:
-            for s in STOK:
-                if abs(b[s]) >= 0.005:
-                    k(s, f"{STOK[s]} (mizan bakiyesi)", b[s])
-            for kod, t in m62.items():
-                if abs(t) >= 0.005:
-                    k(kod, "Mizanda kayıtlı " + SMM_AD[kod][:-4].lower(), t)
+        for s in STOK:
+            if abs(b[s]) >= 0.005:
+                k(s, f"{STOK[s]} (mizan bakiyesi)", b[s])
+        for kod, t in m62.items():
+            if abs(t) >= 0.005:
+                k(kod, "Mizanda kayıtlı " + SMM_AD[kod][:-4].lower(), t)
         for kod, ad, t in (("710", "Direkt ilk madde ve malzeme giderleri (71x)", t71),
                            ("720", "Direkt işçilik giderleri (72x)", t72),
                            ("730", "Genel üretim giderleri (73x)", t73),
@@ -251,7 +249,11 @@ def envanter_smm(h, yontem="envanter", ds_stok=None, kar_marji=None, elle_miktar
             if abs(t) >= 0.005:
                 k(kod, ad, t)
         satir.append(("bolum", "B", "NET SATIŞLAR", net_satis))
-        satir.append(("ara", "SMM", f"SATIŞLARIN MALİYETİ = NET SATIŞ × (1 − %{kar_marji * 100:g})", toplam_smm))
+        if yontem == "elle":
+            k("STOK", "Depoda sayılan dönem sonu stok (elle) (-)", -elle_tutar)
+            satir.append(("ara", "SMM", "SATIŞLARIN MALİYETİ = A − DÖNEM SONU STOK", toplam_smm))
+        else:
+            satir.append(("ara", "SMM", f"SATIŞLARIN MALİYETİ = NET SATIŞ × (1 − %{kar_marji * 100:g})", toplam_smm))
         for kod in ("620", "621", "622"):
             if abs(smm[kod]) >= 0.005:
                 k(kod, SMM_AD[kod][:-4], smm[kod])
@@ -261,19 +263,21 @@ def envanter_smm(h, yontem="envanter", ds_stok=None, kar_marji=None, elle_miktar
                 k(s, STOK[s], ds[s])
         ozet_ek = {"satilabilir": satilabilir}
         if yontem == "elle":
-            fark = elle_tutar - (sum(b.values()) + sum(m62.values()))
-            if abs(fark) >= 0.005:
-                uy.append(f"Elle girilen stok tutarı mizan stokları + kayıtlı 62x toplamından {fark:,.2f} farklı: "
-                          "bu fark mizanda kayıtlı olmadığı için bilanço bu tutar kadar dengesiz görünür.")
             if elle_miktar:
-                birim = satilabilir / elle_miktar
-                satilan = toplam_smm / birim if birim else 0.0
-                satir.append(("bolum", "MİKTAR", "MİKTAR (ortalama maliyetle)", None))
-                k("", "Satışa hazır stok miktarı", elle_miktar)
-                k("", "Ortalama birim maliyet (A / miktar)", birim)
-                k("", "Satılan miktar (SMM / birim maliyet)", satilan)
-                k("", "Dönem sonu stok miktarı", elle_miktar - satilan)
-                ozet_ek.update(birim=birim, ds_miktar=elle_miktar - satilan)
+                birim = elle_tutar / elle_miktar
+                satir.append(("bolum", "MİKTAR", "DÖNEM SONU STOK MİKTARI", None))
+                k("", "Depoda sayılan miktar", elle_miktar)
+                k("", "Birim maliyet (stok tutarı / miktar)", birim)
+                ozet_ek.update(birim=birim, ds_miktar=elle_miktar)
+            if kar_marji is not None:   # oran girildiyse yalnız kontrol: oranla beklenen SMM ile karşılaştır
+                beklenen = net_satis * (1 - kar_marji)
+                satir.append(("bolum", "KONTROL", f"BRÜT KÂR ORANI KONTROLÜ (%{kar_marji * 100:g})", None))
+                k("", "Oranla beklenen SMM = net satış × (1 − oran)", beklenen)
+                k("", "Sayımla bulunan SMM − beklenen", toplam_smm - beklenen)
+                if net_satis and abs(toplam_smm - beklenen) > 0.01 * abs(net_satis):
+                    gercek = (net_satis - toplam_smm) / net_satis * 100
+                    uy.append(f"Sayılan stokla brüt kâr oranı %{gercek:.1f} çıktı, girilen oran %{kar_marji * 100:g}: "
+                              f"fark {toplam_smm - beklenen:,.2f}. Sayımı ya da oranı kontrol edin.")
 
     # h'ye uygula: stoklar dönem sonuna, 71x-74x 62x'e aktarıldı
     for s in STOK:
@@ -497,18 +501,19 @@ def hesapla(hesaplar, stok=None, fgk_istisna=0.0, fgk_oran=0.10, vergi_orani=0.2
     matrah = istisna_sonrasi - mahsup
     devreden = gecmis_zarar - mahsup + max(0.0, -matrah)
     # Kazanç olması halinde indirilecekler (zarar mahsubundan sonra, kalan kazançla sınırlı):
-    # Ar-Ge indirimi (5746 / KVK 10/1-a): yetmeyen kısım sonraki yıla devreder
+    # 09.11 (Kenan Bey): SIRA önce bağış, sonra Ar-Ge.
     # Bağış (KVK 10/1-c): zarar mahsubu sonrası kazancın %5'iyle sınırlı, aşan kısım kaybolur
-    # Tamamı indirilen bağışlar (KVK 10/1-ç, ı, j vb.): kalan kazançla sınırlı
+    # Tamamı indirilen bağışlar (KVK 10/1-ç, ı, j vb.): kalan kazançla sınırlı, devretmez
+    # Ar-Ge indirimi (5746 / KVK 10/1-a): bağışlardan sonra kalan kazançtan; yetmeyen kısım sonraki yıla devreder
     arge, bagis, bagis_tam = (max(0.0, x or 0.0) for x in (arge, bagis, bagis_tam))
     kazanc = max(0.0, matrah)
-    arge_ind = min(arge, kazanc)
-    kazanc -= arge_ind
-    bagis_sinir = 0.05 * max(0.0, matrah)
-    bagis_ind = min(bagis, bagis_sinir, kazanc)
+    bagis_sinir = 0.05 * kazanc
+    bagis_ind = min(bagis, bagis_sinir)
     kazanc -= bagis_ind
     tam_ind = min(bagis_tam, kazanc)
     kazanc -= tam_ind
+    arge_ind = min(arge, kazanc)
+    kazanc -= arge_ind
     if matrah > 0:
         matrah = kazanc
     arge_devreden = arge - arge_ind
@@ -516,8 +521,7 @@ def hesapla(hesaplar, stok=None, fgk_istisna=0.0, fgk_oran=0.10, vergi_orani=0.2
         uyarilar.append(f"Ar-Ge indiriminin {arge_devreden:,.2f} kısmı kazanç yetmediği için indirilemedi, "
                         "sonraki yıla devreder (yeniden değerleme oranıyla artırılır).")
     if bagis - bagis_ind >= 0.005:
-        uyarilar.append(f"Bağışın {bagis - bagis_ind:,.2f} kısmı %5 sınırını ({bagis_sinir:,.2f}) ya da kalan "
-                        "kazancı aştığı için indirilemedi, devretmez (KKEG olarak kalır).")
+        uyarilar.append(f"Bağışın {bagis - bagis_ind:,.2f} kısmı %5 sınırını ({bagis_sinir:,.2f}) aştığı için indirilemedi, devretmez (KKEG olarak kalır).")
     if bagis_tam - tam_ind >= 0.005:
         uyarilar.append(f"Tamamı indirilen bağışın {bagis_tam - tam_ind:,.2f} kısmı kalan kazancı aştı, "
                         "indirilemedi ve devretmez.")
@@ -546,9 +550,9 @@ def hesapla(hesaplar, stok=None, fgk_istisna=0.0, fgk_oran=0.10, vergi_orani=0.2
                  ("DÖNEM KARI / ZARARI", donem_kari),
                  ("İştirak Kazancı İstisnası (-) (KVK 5/1-a)", istirak),
                  ("Mahsup Edilen Geçmiş Yıl Zararı (-)", mahsup),
-                 ("Ar-Ge İndirimi (-)", arge_ind),
                  ("Bağış ve Yardımlar (-) (%5 sınırlı)", bagis_ind),
                  ("Tamamı İndirilen Bağışlar (-)", tam_ind),
+                 ("Ar-Ge İndirimi (-)", arge_ind),
                  ("Sonraki Yıla Devreden Ar-Ge İndirimi", arge_devreden),
                  ("MALİ KAR (MATRAH)", max(0.0, matrah)),
                  ("Sonraki Yıla Devreden Zarar", devreden),

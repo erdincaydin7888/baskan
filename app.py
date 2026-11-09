@@ -217,7 +217,7 @@ class MaliTablolar(QWidget):
         self.yontem = QComboBox()
         self.yontem.addItems(["Otomatik (mizandan tanı)", "Dönem sonu fiili envanter (150-153)",
                               "Brüt kâr oranı (stoklar mizandan)",
-                              "Stok miktar + tutar elle, brüt kâr oranı"])
+                              "Dönem sonu stok miktar + tutar elle (sayım)"])
         self.yontem.currentIndexChanged.connect(self.yontem_degisti)
         smm_satir.addWidget(self.yontem)
         self.yontem_yigin = QStackedWidget()
@@ -237,8 +237,8 @@ class MaliTablolar(QWidget):
                     [("150 grubu (mamul) kâr %:", self.marj), ("ya da DS ₺:", self.ds150m),
                      ("153 ticari mal kâr %:", self.marj153), ("ya da DS ₺:", self.ds153m),
                      ("153 satışı ₺:", self.ticari_satis)],
-                    [("Satışa hazır stok miktarı:", self.elle_miktar), ("Stok tutarı ₺:", self.elle_tutar),
-                     ("Brüt kâr oranı %:", self.marj2)]]
+                    [("Dönem sonu stok miktarı:", self.elle_miktar), ("DS stok tutarı ₺:", self.elle_tutar),
+                     ("Kontrol brüt kâr %:", self.marj2)]]
         for ciftler in sayfalar:
             w = QWidget()
             hl = QHBoxLayout(w)
@@ -336,8 +336,8 @@ class MaliTablolar(QWidget):
         "150 grubu ve 153 için ayrı ayrı: dönem sonu stok (DS) doluysa SMM = satılabilir maliyet − DS, boşsa brüt kâr oranı: "
         "her grubun SMM'si = o grubun satışı × (1 − oranı), dönem sonu stok = satılabilir maliyet − SMM. Ticari mal "
         "satışı boşsa net satış grupların satılabilir maliyeti oranında bölünür. Tek oran girerseniz ikisine de uygulanır.",
-        "SMM = Net satış × (1 − brüt kâr oranı). Dönem sonu stok = elle yazılan stok tutarı + 710/720/730/740 "
-        "− SMM; miktar ortalama birim maliyetle bulunur."]
+        "Depoda sayılan dönem sonu stok (ör. 30.09'da satışa hazır stok) miktar ve tutarını yazın. SMM = 150-153 "
+        "mizan bakiyeleri + 710/720/730/740 − dönem sonu stok. Brüt kâr oranı yazılırsa yalnız kontrol edilir."]
 
     def yontem_degisti(self, i):
         self.yontem_yigin.setCurrentIndex(i)
@@ -370,10 +370,8 @@ class MaliTablolar(QWidget):
                 eksik = "   ⚠ 150 / 153 için brüt kâr oranı ya da dönem sonu stok girin"
         elif i == 1 and not any(v is not None for v in ds_stok.values()):
             eksik = "   ⚠ Dönem sonu stoklarını girin"
-        elif i == 3 and marj is None:
-            eksik = "   ⚠ Brüt kâr oranını girin"
         elif i == 3 and self.deger(self.elle_tutar) is None:
-            eksik = "   ⚠ Stok tutarını girin"
+            eksik = "   ⚠ Dönem sonu stok tutarını girin"
         if i >= 2 and eksik:  # oran / tutar yokken fiili envanter (mizan bakiyeleri) ile göster
             yontem, marj, ds_stok = "envanter", None, None
         kar = None if marj is None else (

@@ -49,10 +49,15 @@ def sina(yol):
     assert abs(rm["smm"]["smm"] - ns * 0.80) < 0.01
     assert abs(rm["smm"]["donem_sonu_stok"]["153"] - (STOK_153 - ns * 0.80)) < 0.01
     assert abs(rm["smm"]["brut_oran"] - 0.20) < 1e-9
-    # Elle stok: mizandaki tutar girilirse marj yöntemiyle aynı, miktar ortalama maliyetle
-    rl = motor.hesapla(h, yontem="elle", kar_marji=0.20, elle_tutar=STOK_153, elle_miktar=1000)
+    # Elle stok = depoda sayılan DÖNEM SONU stok: SMM = satılabilir − sayılan; oran yalnız kontrol
+    ds_m = STOK_153 - ns * 0.80
+    rl = motor.hesapla(h, yontem="elle", elle_tutar=ds_m, elle_miktar=1000)
     assert rl["fark"] == 0 and abs(rl["donem_kari"] - rm["donem_kari"]) < 0.01
-    assert abs(rl["smm"]["ds_miktar"] - 1000 * (1 - ns * 0.80 / STOK_153)) < 1e-6
+    assert abs(rl["smm"]["brut_oran"] - 0.20) < 1e-9 and rl["smm"]["ds_miktar"] == 1000
+    assert abs(rl["smm"]["birim"] - ds_m / 1000) < 1e-9
+    rk = motor.hesapla(h, yontem="elle", elle_tutar=ds_m, kar_marji=0.30)
+    assert rk["fark"] == 0 and any("brüt kâr oranı %20.0" in u for u in rk["uyarilar"]), rk["uyarilar"]
+    assert not any("Sayılan stokla" in u for u in motor.hesapla(h, yontem="elle", elle_tutar=ds_m, kar_marji=0.20)["uyarilar"])
     # Üretim: 150/151/152 stok farkı + 71x/72x/73x → 620, 74x → 622; bilanço dengede
     u = {k: dict(v) for k, v in h.items()}
     ek = {"150": 500.0, "151": 300.0, "152": 200.0, "710": 1000.0, "720": 400.0, "730": 250.0, "740": 50.0}
@@ -86,13 +91,16 @@ def sina(yol):
     v = dict(motor.hesapla(h, stok=DS, istirak=M + 5e6, gecmis_zarar=100)["vergi"])
     assert v["MALİ KAR (MATRAH)"] == 0 and v["Mahsup Edilen Geçmiş Yıl Zararı (-)"] == 0
     assert abs(v["Sonraki Yıla Devreden Zarar"] - (100 + 5e6)) < 0.01
-    # Ar-Ge + bağış: zarar mahsubundan sonra, bağış %5 sınırlı, kalan kazançla sınırlı
+    # Bağış + Ar-Ge: zarar mahsubundan sonra ÖNCE bağış (%5 sınırlı), SONRA Ar-Ge (kalan kazançtan, artanı devreder)
     v = dict(motor.hesapla(h, stok=DS, arge=1e6, bagis=5e6, bagis_tam=1e5)["vergi"])
     assert abs(v["Bağış ve Yardımlar (-) (%5 sınırlı)"] - M * 0.05) < 0.01
     assert abs(v["MALİ KAR (MATRAH)"] - (M - 1e6 - M * 0.05 - 1e5)) < 0.01
     v = dict(motor.hesapla(h, stok=DS, arge=M + 5e6, bagis=1000)["vergi"])
-    assert v["MALİ KAR (MATRAH)"] == 0 and v["Bağış ve Yardımlar (-) (%5 sınırlı)"] == 0
-    assert abs(v["Sonraki Yıla Devreden Ar-Ge İndirimi"] - 5e6) < 0.01
+    assert v["MALİ KAR (MATRAH)"] == 0 and v["Bağış ve Yardımlar (-) (%5 sınırlı)"] == 1000
+    assert abs(v["Ar-Ge İndirimi (-)"] - (M - 1000)) < 0.01
+    assert abs(v["Sonraki Yıla Devreden Ar-Ge İndirimi"] - (5e6 + 1000)) < 0.01
+    sira = [ad for ad, _ in motor.hesapla(h, stok=DS)["vergi"]]
+    assert sira.index("Bağış ve Yardımlar (-) (%5 sınırlı)") < sira.index("Ar-Ge İndirimi (-)")
     # Stok girilmeden de bilanço dengede olmalı
     assert motor.hesapla(h)["fark"] == 0
     # Aynı mizan: alt hesaplı + farklı başlıklı + TR sayı biçimli + üst satırda firma başlığı
